@@ -8,10 +8,12 @@ from utils.constants.MiscCodes import CreatureGroupFlags
 
 
 CREATURE_GROUPS = {}
+DYNAMIC_CREATURE_GROUPS = {}
 
 
 class CreatureGroupManager:
     def __init__(self):
+        self.is_dynamic = False
         self.original_leader_spawn_id = 0
         self.waypoints: list[MovementWaypoint] = []
         self.leader = None
@@ -20,12 +22,19 @@ class CreatureGroupManager:
         self.group_flags = 0
 
     @staticmethod
-    def get_create_group(creature_group):
-        if creature_group.leader_guid not in CREATURE_GROUPS:
+    def get_create_group(creature_group, is_dynamic=False):
+        selected_group_dict = DYNAMIC_CREATURE_GROUPS if is_dynamic else CREATURE_GROUPS
+        if creature_group.leader_guid not in selected_group_dict:
             creature_group_mgr = CreatureGroupManager()
+            creature_group_mgr.is_dynamic = is_dynamic
             creature_group_mgr.creature_group = creature_group
-            CREATURE_GROUPS[creature_group.leader_guid] = creature_group_mgr
-        return CREATURE_GROUPS[creature_group.leader_guid]
+            selected_group_dict[creature_group.leader_guid] = creature_group_mgr
+        return selected_group_dict[creature_group.leader_guid]
+
+    def _get_valid_member_id(self, creature_mgr):
+        if self.is_dynamic or creature_mgr.spawn_id == 0:
+            return creature_mgr.guid
+        return creature_mgr.spawn_id
 
     def is_leader(self, creature_mgr):
         return self.leader and self.leader.guid == creature_mgr.guid
@@ -33,13 +42,15 @@ class CreatureGroupManager:
     def add_member(self, creature_mgr, dist: int = 0, angle: int = 0, flags: int = 0):
         if creature_mgr.guid not in self.members:
             self.members[creature_mgr.guid] = CreatureGroupMember(creature_mgr, self.creature_group, dist, angle, flags)
+
+        member_id = self._get_valid_member_id(creature_mgr)
         # Set leader.
-        if self.creature_group.leader_guid == creature_mgr.spawn_id:
+        if self.creature_group.leader_guid == member_id:
             self.leader = creature_mgr
-            self.original_leader_spawn_id = creature_mgr.spawn_id
+            self.original_leader_spawn_id = member_id
             # Generate waypoints that will be used by the current/temporary leader.
             creature_movement = WorldDatabaseManager.CreatureMovementHolder.get_waypoints_for_creature(
-                creature_mgr.entry, creature_mgr.spawn_id)
+                creature_mgr.entry, member_id)
             if creature_movement:
                 creature_movement.sort(key=lambda wp: wp.point)
                 self.waypoints = self._get_sorted_waypoints_by_distance(creature_movement)
@@ -49,7 +60,7 @@ class CreatureGroupManager:
         if not creature_mgr.creature_group:
             creature_mgr.creature_group = self
 
-        if self.creature_group.leader_guid != creature_mgr.spawn_id:
+        if self.creature_group.leader_guid != member_id:
             creature_mgr.movement_manager.initialize_or_reset()
 
         Logger.debug(f'{creature_mgr.get_name()} joined group.')
@@ -60,7 +71,8 @@ class CreatureGroupManager:
         self.members.pop(creature_mgr.guid)
         disbanded = False
 
-        if not self.members or self.original_leader_spawn_id == creature_mgr.spawn_id:
+        member_id = self._get_valid_member_id(creature_mgr)
+        if not self.members or self.original_leader_spawn_id == member_id:
             self.disband()
             disbanded = True
         elif self.is_leader(creature_mgr) and self.is_formation():
@@ -71,7 +83,7 @@ class CreatureGroupManager:
             creature_mgr.creature_group = None
 
         # Member left the group but group still exists, reset leaver movement behavior.
-        if not disbanded and self.original_leader_spawn_id != creature_mgr.spawn_id:
+        if not disbanded and self.original_leader_spawn_id != member_id:
             creature_mgr.movement_manager.initialize_or_reset()
 
         if not disbanded:
@@ -119,12 +131,16 @@ class CreatureGroupManager:
         for guid, member in self.members.items():
             member.creature_group = None
             member.creature.creature_group = None
+            member_id = self._get_valid_member_id(member.creature)
             # Reset movement behavior for non leader members.
-            if self.original_leader_spawn_id != member.creature.spawn_id:
+            if self.original_leader_spawn_id != member_id:
                 member.creature.movement_manager.initialize_or_reset()
             Logger.debug(f'{member.creature.get_name()} left creature group.')
         self.members.clear()
-        CREATURE_GROUPS.pop(self.original_leader_spawn_id)
+        if self.is_dynamic:
+            DYNAMIC_CREATURE_GROUPS.pop(self.original_leader_spawn_id)
+        else:
+            CREATURE_GROUPS.pop(self.original_leader_spawn_id)
 
     def is_formation(self):
         return self.group_flags & CreatureGroupFlags.OPTION_FORMATION_MOVE

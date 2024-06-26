@@ -1587,13 +1587,17 @@ class ScriptHandler:
         creature_group_mgr = command.target.creature_group
         if not creature_group_mgr:
             Logger.debug(f'Creating creature group, leader is {command.target.get_name()}')
+            # A dynamic Creature Group means that the leader (and usually all of its members) have been spawned
+            # at runtime and are not static spawns.
+            is_dynamic = command.target.spawn_id == 0
+            member_id = command.target.guid if is_dynamic else command.target.spawn_id
             creature_group_mgr = CreatureGroupManager.get_create_group(CreatureGroup(
-                leader_guid=command.target.spawn_id,
-                member_guid=command.target.spawn_id,
+                leader_guid=member_id,
+                member_guid=member_id,
                 dist=command.x,
                 angle=command.o,
                 flags=command.datalong
-            ))
+            ), is_dynamic=is_dynamic)
             command.target.creature_group = creature_group_mgr
             creature_group_mgr.add_member(command.target)
 
